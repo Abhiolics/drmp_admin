@@ -46,6 +46,7 @@ import {
   Copy
 } from 'lucide-react';
 import { toast } from 'sonner';
+import PaginationControls from '@/components/ui/PaginationControls';
 
 // Fallback mockup data
 const fallbackUsers = [
@@ -72,13 +73,51 @@ export default function UserManagementPage() {
 
   const pageParam = searchParams.get('page');
   const initialPage = pageParam ? parseInt(pageParam, 10) : 1;
-  const [currentPage, setCurrentPage] = useState(initialPage);
+  const [currentPage, setCurrentPage] = useState(initialPage > 0 ? initialPage : 1);
+  const [pageSize, setPageSize] = useState<number>(10);
+
+  // Sync currentPage from URL query parameter on navigation
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const p = parseInt(params.get('page') || '1', 10);
+      if (!isNaN(p) && p > 0 && p !== currentPage) {
+        setCurrentPage(p);
+      }
+    }
+  }, [searchParams]);
 
   const handlePageChange = (newPage: number) => {
-    setCurrentPage(newPage);
-    const params = new URLSearchParams(searchParams.toString());
-    params.set('page', newPage.toString());
-    router.push(`${pathname}?${params.toString()}`);
+    const validPage = Math.max(1, newPage);
+    setCurrentPage(validPage);
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      params.set('tab', 'users');
+      params.set('page', validPage.toString());
+      window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+    }
+  };
+
+  const handlePageSizeChange = (newSize: number) => {
+    setPageSize(newSize);
+    setCurrentPage(1);
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      params.set('tab', 'users');
+      params.set('page', '1');
+      window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+    }
+  };
+
+  const handleSearchChange = (value: string) => {
+    setSearchTerm(value);
+    setCurrentPage(1);
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      params.set('tab', 'users');
+      params.set('page', '1');
+      window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+    }
   };
   
   // Wallet Adjust form state
@@ -94,8 +133,8 @@ export default function UserManagementPage() {
 
   // Fetch Users
   const { data: usersRes, isLoading: isQueryLoading, isFetching, error, isError } = useQuery({
-    queryKey: ['admin', 'users', currentPage],
-    queryFn: () => adminApi.getUsers(currentPage),
+    queryKey: ['admin', 'users', currentPage, pageSize, searchTerm],
+    queryFn: () => adminApi.getUsers(currentPage, pageSize, searchTerm),
     enabled: mounted,
     placeholderData: keepPreviousData,
   });
@@ -153,14 +192,41 @@ export default function UserManagementPage() {
 
   const users = getUsersList();
 
-  const getPagination = () => {
-    if (!usersRes) return { page: 1, limit: 10, total: 0, pages: 1 };
-    if (usersRes.data?.data?.pagination) return usersRes.data.data.pagination;
-    if (usersRes.data?.pagination) return usersRes.data.pagination;
-    return { page: 1, limit: 10, total: 0, pages: 1 };
+  // Robust server pagination extractor
+  const extractServerPagination = () => {
+    if (!usersRes?.data) return null;
+    const raw = usersRes.data;
+
+    // Check nested pagination objects
+    const nested = raw.data?.pagination || raw.pagination || raw.meta?.pagination || raw.meta;
+    if (nested && typeof nested === 'object') {
+      const page = Number(nested.page || nested.currentPage || 1);
+      const limit = Number(nested.limit || nested.perPage || nested.pageSize || pageSize);
+      const total = Number(nested.total || nested.totalUsers || nested.totalCount || nested.count || 0);
+      const pages = Number(nested.pages || nested.totalPages || (limit > 0 ? Math.ceil(total / limit) : 1));
+      if (total >= 0) {
+        return { page, limit, total, pages: Math.max(1, pages) };
+      }
+    }
+
+    // Direct fields on raw or raw.data
+    const target = raw.data && typeof raw.data === 'object' && !Array.isArray(raw.data) ? raw.data : raw;
+    const directTotal = Number(target.total ?? target.totalUsers ?? target.totalCount);
+    const directPages = Number(target.pages ?? target.totalPages);
+    const directPage = Number(target.page ?? target.currentPage);
+    const directLimit = Number(target.limit ?? target.perPage ?? target.pageSize);
+
+    if (!isNaN(directTotal) && directTotal >= 0) {
+      const lim = !isNaN(directLimit) && directLimit > 0 ? directLimit : pageSize;
+      const pgs = !isNaN(directPages) && directPages > 0 ? directPages : Math.max(1, Math.ceil(directTotal / lim));
+      const pg = !isNaN(directPage) && directPage > 0 ? directPage : currentPage;
+      return { page: pg, limit: lim, total: directTotal, pages: pgs };
+    }
+
+    return null;
   };
 
-  const pagination = getPagination();
+  const serverPagination = extractServerPagination();
 
   // Mutation: Block/Unblock
   const toggleBlockMutation = useMutation({
@@ -222,11 +288,28 @@ export default function UserManagementPage() {
     });
   };
 
-  const filteredUsers = users.filter((user: any) => 
-    user.fullName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    user.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    user.phoneNumber.includes(searchTerm)
-  );
+  // Client filter fallback if server pagination is absent
+  const clientFilteredUsers = users.filter((user: any) => {
+    const term = searchTerm.toLowerCase().trim();
+    if (!term) return true;
+    return (
+      (user.fullName || '').toLowerCase().includes(term) ||
+      (user.email || '').toLowerCase().includes(term) ||
+      (user.phoneNumber || '').includes(term) ||
+      (user.referralCode || '').toLowerCase().includes(term)
+    );
+  });
+
+  const isServerPaginated = Boolean(serverPagination);
+  const totalCount = isServerPaginated && serverPagination ? serverPagination.total : clientFilteredUsers.length;
+  const totalPages = isServerPaginated && serverPagination 
+    ? Math.max(1, serverPagination.pages) 
+    : Math.max(1, Math.ceil(clientFilteredUsers.length / pageSize));
+  const activePage = Math.min(Math.max(1, currentPage), totalPages);
+
+  const displayedUsers = isServerPaginated 
+    ? users 
+    : clientFilteredUsers.slice((activePage - 1) * pageSize, activePage * pageSize);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-300">
@@ -242,7 +325,7 @@ export default function UserManagementPage() {
           <Input
             placeholder="Search name, email, or phone..."
             value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            onChange={(e) => handleSearchChange(e.target.value)}
             className="pl-10 border-slate-800 bg-slate-900/50 text-white focus-visible:ring-indigo-500"
           />
         </div>
@@ -259,9 +342,9 @@ export default function UserManagementPage() {
             <div className="py-20 text-center text-rose-400 text-sm">
               Failed to load users: {error instanceof Error ? error.message : 'Unknown error'}
             </div>
-          ) : filteredUsers.length === 0 ? (
+          ) : displayedUsers.length === 0 ? (
             <div className="py-20 text-center text-slate-500 text-sm">
-              No accounts matching criteria found.
+              {searchTerm ? 'No accounts matching criteria found.' : 'No users registered on the platform.'}
             </div>
           ) : (
             <>
@@ -283,7 +366,7 @@ export default function UserManagementPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredUsers.map((u: any) => {
+                  {displayedUsers.map((u: any) => {
                     const userId = u.id || u._id;
                     const userUpis = upiList.filter((upi: any) => {
                       const upiUserId = upi.userId?._id || upi.userId?.id || upi.userId;
@@ -427,36 +510,15 @@ export default function UserManagementPage() {
               </Table>
             </div>
             {/* Pagination Controls */}
-            {users.length > 0 && (
-              <div className="flex items-center justify-between border-t border-slate-800 bg-slate-950/45 px-4 py-3">
-                <div className="text-sm text-slate-400">
-                  Showing <span className="font-medium text-white">{(pagination.page - 1) * pagination.limit + 1}</span> to <span className="font-medium text-white">{Math.min(pagination.page * pagination.limit, pagination.total)}</span> of <span className="font-medium text-white">{pagination.total}</span> users
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handlePageChange(Math.max(1, pagination.page - 1))}
-                    disabled={pagination.page <= 1}
-                    className="border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-900 hover:text-white"
-                  >
-                    Previous
-                  </Button>
-                  <div className="text-sm text-slate-400 mx-2">
-                    Page {pagination.page} of {pagination.pages}
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handlePageChange(Math.min(pagination.pages, pagination.page + 1))}
-                    disabled={pagination.page >= pagination.pages}
-                    className="border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-900 hover:text-white"
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
-            )}
+            <PaginationControls
+              currentPage={activePage}
+              totalPages={totalPages}
+              totalCount={totalCount}
+              pageSize={pageSize}
+              onPageChange={handlePageChange}
+              onPageSizeChange={handlePageSizeChange}
+              itemName="users"
+            />
           </>
           )}
         </CardContent>

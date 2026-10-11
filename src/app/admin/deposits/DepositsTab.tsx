@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { depositApi } from '@/lib/api';
@@ -15,6 +15,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { 
   Dialog, 
   DialogContent, 
@@ -34,9 +35,11 @@ import {
   FileCheck, 
   ExternalLink,
   Calendar,
-  Layers
+  Layers,
+  Search
 } from 'lucide-react';
 import { toast } from 'sonner';
+import PaginationControls from '@/components/ui/PaginationControls';
 
 // Fallback mockup data
 const fallbackDeposits = [
@@ -71,16 +74,66 @@ export default function DepositManagementPage() {
   const [selectedDeposit, setSelectedDeposit] = useState<any>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('all');
+  const [searchTerm, setSearchTerm] = useState('');
 
   const pageParam = searchParams.get('page');
   const initialPage = pageParam ? parseInt(pageParam, 10) : 1;
-  const [currentPage, setCurrentPage] = useState(initialPage);
+  const [currentPage, setCurrentPage] = useState(initialPage > 0 ? initialPage : 1);
+  const [pageSize, setPageSize] = useState<number>(10);
+
+  // Sync currentPage from URL query parameter on navigation
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const p = parseInt(params.get('page') || '1', 10);
+      if (!isNaN(p) && p > 0 && p !== currentPage) {
+        setCurrentPage(p);
+      }
+    }
+  }, [searchParams]);
 
   const handlePageChange = (newPage: number) => {
-    setCurrentPage(newPage);
-    const params = new URLSearchParams(searchParams.toString());
-    params.set('page', newPage.toString());
-    router.push(`${pathname}?${params.toString()}`);
+    const validPage = Math.max(1, newPage);
+    setCurrentPage(validPage);
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      params.set('tab', 'deposits');
+      params.set('page', validPage.toString());
+      window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+    }
+  };
+
+  const handlePageSizeChange = (newSize: number) => {
+    setPageSize(newSize);
+    setCurrentPage(1);
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      params.set('tab', 'deposits');
+      params.set('page', '1');
+      window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+    }
+  };
+
+  const handleSearchChange = (value: string) => {
+    setSearchTerm(value);
+    setCurrentPage(1);
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      params.set('tab', 'deposits');
+      params.set('page', '1');
+      window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+    }
+  };
+
+  const handleTabChange = (tab: string) => {
+    setActiveTab(tab);
+    setCurrentPage(1);
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      params.set('tab', 'deposits');
+      params.set('page', '1');
+      window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+    }
   };
   
   // Rejection Form states
@@ -94,8 +147,8 @@ export default function DepositManagementPage() {
 
   // Fetch deposits
   const { data: depositsRes, isLoading: isQueryLoading, isFetching, error, isError } = useQuery({
-    queryKey: ['admin', 'deposits', currentPage],
-    queryFn: () => depositApi.getAllDepositsAdmin(currentPage),
+    queryKey: ['admin', 'deposits', currentPage, pageSize, activeTab],
+    queryFn: () => depositApi.getAllDepositsAdmin(currentPage, pageSize, activeTab === 'all' ? undefined : activeTab),
     enabled: mounted,
     placeholderData: keepPreviousData,
   });
@@ -124,14 +177,39 @@ export default function DepositManagementPage() {
 
   const deposits = getDepositsList();
 
-  const getPagination = () => {
-    if (!depositsRes) return { page: 1, limit: 10, total: 0, pages: 1 };
-    if (depositsRes.data?.data?.pagination) return depositsRes.data.data.pagination;
-    if (depositsRes.data?.pagination) return depositsRes.data.pagination;
-    return { page: 1, limit: 10, total: 0, pages: 1 };
+  // Robust server pagination extractor
+  const extractServerPagination = () => {
+    if (!depositsRes?.data) return null;
+    const raw = depositsRes.data;
+
+    const nested = raw.data?.pagination || raw.pagination || raw.meta?.pagination || raw.meta;
+    if (nested && typeof nested === 'object') {
+      const page = Number(nested.page || nested.currentPage || 1);
+      const limit = Number(nested.limit || nested.perPage || nested.pageSize || pageSize);
+      const total = Number(nested.total || nested.totalDeposits || nested.totalCount || nested.count || 0);
+      const pages = Number(nested.pages || nested.totalPages || (limit > 0 ? Math.ceil(total / limit) : 1));
+      if (total >= 0) {
+        return { page, limit, total, pages: Math.max(1, pages) };
+      }
+    }
+
+    const target = raw.data && typeof raw.data === 'object' && !Array.isArray(raw.data) ? raw.data : raw;
+    const directTotal = Number(target.total ?? target.totalDeposits ?? target.totalCount);
+    const directPages = Number(target.pages ?? target.totalPages);
+    const directPage = Number(target.page ?? target.currentPage);
+    const directLimit = Number(target.limit ?? target.perPage ?? target.pageSize);
+
+    if (!isNaN(directTotal) && directTotal >= 0) {
+      const lim = !isNaN(directLimit) && directLimit > 0 ? directLimit : pageSize;
+      const pgs = !isNaN(directPages) && directPages > 0 ? directPages : Math.max(1, Math.ceil(directTotal / lim));
+      const pg = !isNaN(directPage) && directPage > 0 ? directPage : currentPage;
+      return { page: pg, limit: lim, total: directTotal, pages: pgs };
+    }
+
+    return null;
   };
 
-  const pagination = getPagination();
+  const serverPagination = extractServerPagination();
 
   // Approve Mutation
   const approveMutation = useMutation({
@@ -177,10 +255,31 @@ export default function DepositManagementPage() {
     rejectMutation.mutate(selectedDeposit._id || selectedDeposit.id);
   };
 
-  const getFilteredDeposits = () => {
-    if (activeTab === 'all') return deposits;
-    return deposits.filter((d: any) => d.status === activeTab);
-  };
+  // Client filter for search term & status fallback
+  const filteredDeposits = deposits.filter((d: any) => {
+    if (activeTab !== 'all' && d.status !== activeTab) {
+      return false;
+    }
+    const term = searchTerm.toLowerCase().trim();
+    if (!term) return true;
+    return (
+      (d.user?.fullName || '').toLowerCase().includes(term) ||
+      (d.user?.email || '').toLowerCase().includes(term) ||
+      (d.transactionRef || '').toLowerCase().includes(term) ||
+      String(d.amount || '').includes(term)
+    );
+  });
+
+  const isServerPaginated = Boolean(serverPagination && !searchTerm.trim());
+  const totalCount = isServerPaginated && serverPagination ? serverPagination.total : filteredDeposits.length;
+  const totalPages = isServerPaginated && serverPagination
+    ? Math.max(1, serverPagination.pages)
+    : Math.max(1, Math.ceil(filteredDeposits.length / pageSize));
+  const activePage = Math.min(Math.max(1, currentPage), totalPages);
+
+  const displayedDeposits = isServerPaginated
+    ? deposits
+    : filteredDeposits.slice((activePage - 1) * pageSize, activePage * pageSize);
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -211,9 +310,20 @@ export default function DepositManagementPage() {
           <h1 className="text-3xl font-extrabold tracking-tight text-white">Deposit Inflows</h1>
           <p className="text-slate-400 text-sm">Verify screenshots of bank transfers and UPI receipts submitted by users to purchase membership plans.</p>
         </div>
+
+        {/* Search bar */}
+        <div className="relative w-full md:w-80">
+          <Search className="absolute left-3 top-3 h-4 w-4 text-slate-500" />
+          <Input
+            placeholder="Search applicant, email, txn ref..."
+            value={searchTerm}
+            onChange={(e) => handleSearchChange(e.target.value)}
+            className="pl-10 border-slate-800 bg-slate-900/50 text-white focus-visible:ring-emerald-500"
+          />
+        </div>
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
         <TabsList className="border-slate-800 bg-slate-900 text-slate-400">
           <TabsTrigger value="all" className="data-[state=active]:bg-indigo-650 data-[state=active]:text-white">All Deposits</TabsTrigger>
           <TabsTrigger value="pending" className="data-[state=active]:bg-amber-600 data-[state=active]:text-white">Pending Requests</TabsTrigger>
@@ -233,16 +343,16 @@ export default function DepositManagementPage() {
                 <div className="py-20 text-center text-rose-400 text-sm">
                   Failed to load deposits: {error instanceof Error ? error.message : 'Unknown error'}
                 </div>
-              ) : getFilteredDeposits().length === 0 ? (
+              ) : displayedDeposits.length === 0 ? (
                 <div className="py-20 text-center text-slate-500 text-sm">
-                  No deposits found in this category.
+                  {searchTerm ? 'No deposits matching search query.' : 'No deposits found in this category.'}
                 </div>
               ) : (
                 <>
                   <div className="overflow-x-auto relative">
                     {isFetching && (
                       <div className="absolute inset-0 bg-slate-950/20 backdrop-blur-[1px] z-10 flex items-center justify-center">
-                        <Loader2 className="h-6 w-6 animate-spin text-indigo-500" />
+                        <Loader2 className="h-6 w-6 animate-spin text-emerald-500" />
                       </div>
                     )}
                     <Table>
@@ -257,7 +367,7 @@ export default function DepositManagementPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {getFilteredDeposits().map((d: any) => {
+                      {displayedDeposits.map((d: any) => {
                         const depositId = d._id || d.id;
                         const userName = d.user?.fullName || 'Sandbox User';
                         const userEmail = d.user?.email || 'user@example.com';
@@ -330,36 +440,16 @@ export default function DepositManagementPage() {
                   </Table>
                 </div>
                 {/* Pagination Controls */}
-                {deposits.length > 0 && (
-                  <div className="flex items-center justify-between border-t border-slate-800 bg-slate-950/45 px-4 py-3">
-                    <div className="text-sm text-slate-400">
-                      Showing <span className="font-medium text-white">{(pagination.page - 1) * pagination.limit + 1}</span> to <span className="font-medium text-white">{Math.min(pagination.page * pagination.limit, pagination.total)}</span> of <span className="font-medium text-white">{pagination.total}</span> deposits
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handlePageChange(Math.max(1, pagination.page - 1))}
-                        disabled={pagination.page <= 1}
-                        className="border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-900 hover:text-white"
-                      >
-                        Previous
-                      </Button>
-                      <div className="text-sm text-slate-400 mx-2">
-                        Page {pagination.page} of {pagination.pages}
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handlePageChange(Math.min(pagination.pages, pagination.page + 1))}
-                        disabled={pagination.page >= pagination.pages}
-                        className="border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-900 hover:text-white"
-                      >
-                        Next
-                      </Button>
-                    </div>
-                  </div>
-                )}
+                <PaginationControls
+                  currentPage={activePage}
+                  totalPages={totalPages}
+                  totalCount={totalCount}
+                  pageSize={pageSize}
+                  onPageChange={handlePageChange}
+                  onPageSizeChange={handlePageSizeChange}
+                  itemName="deposits"
+                  activeButtonClass="bg-emerald-600 text-white hover:bg-emerald-500 font-bold border-emerald-500 shadow-sm shadow-emerald-600/30"
+                />
               </>
               )}
             </CardContent>

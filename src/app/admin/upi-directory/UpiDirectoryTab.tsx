@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { upiApi } from '@/lib/api';
 import { 
   Table, 
@@ -22,10 +23,64 @@ import {
   Search,
   UserCheck
 } from 'lucide-react';
+import PaginationControls from '@/components/ui/PaginationControls';
 
 export default function UpiDirectoryTab() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
   const [mounted, setMounted] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+
+  const pageParam = searchParams.get('page');
+  const initialPage = pageParam ? parseInt(pageParam, 10) : 1;
+  const [currentPage, setCurrentPage] = useState(initialPage > 0 ? initialPage : 1);
+  const [pageSize, setPageSize] = useState<number>(10);
+
+  // Sync currentPage from URL query parameter on navigation
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const p = parseInt(params.get('page') || '1', 10);
+      if (!isNaN(p) && p > 0 && p !== currentPage) {
+        setCurrentPage(p);
+      }
+    }
+  }, [searchParams]);
+
+  const handlePageChange = (newPage: number) => {
+    const validPage = Math.max(1, newPage);
+    setCurrentPage(validPage);
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      params.set('tab', 'upi-directory');
+      params.set('page', validPage.toString());
+      window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+    }
+  };
+
+  const handlePageSizeChange = (newSize: number) => {
+    setPageSize(newSize);
+    setCurrentPage(1);
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      params.set('tab', 'upi-directory');
+      params.set('page', '1');
+      window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+    }
+  };
+
+  const handleSearchChange = (value: string) => {
+    setSearchTerm(value);
+    setCurrentPage(1);
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      params.set('tab', 'upi-directory');
+      params.set('page', '1');
+      window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+    }
+  };
 
   React.useEffect(() => {
     setMounted(true);
@@ -72,6 +127,12 @@ export default function UpiDirectoryTab() {
            name.includes(searchTerm.toLowerCase());
   });
 
+  const totalCount = filteredUpis.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const activePage = Math.min(Math.max(1, currentPage), totalPages);
+
+  const displayedUpis = filteredUpis.slice((activePage - 1) * pageSize, activePage * pageSize);
+
   return (
     <div className="space-y-8 animate-in fade-in duration-300">
       {/* Header section */}
@@ -114,7 +175,7 @@ export default function UpiDirectoryTab() {
               type="text"
               placeholder="Search VPA, owner, email..."
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => handleSearchChange(e.target.value)}
               className="w-full pl-9 pr-4 py-2 bg-slate-950/60 border border-slate-850 rounded-lg text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-indigo-550 transition-colors"
             />
           </div>
@@ -131,63 +192,76 @@ export default function UpiDirectoryTab() {
               <p className="text-sm font-semibold">Failed to fetch UPI records</p>
               <p className="text-xs text-rose-500/80">{error instanceof Error ? error.message : 'Unknown error'}</p>
             </div>
-          ) : filteredUpis.length === 0 ? (
+          ) : displayedUpis.length === 0 ? (
             <div className="py-20 text-center text-slate-500 text-sm italic">
               {searchTerm ? 'No matching UPI records found.' : 'No registered UPI handles on the platform.'}
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader className="bg-slate-950/20 border-b border-slate-800">
-                  <TableRow className="border-slate-850 hover:bg-transparent">
-                    <TableHead className="text-slate-400 font-semibold text-xs py-3.5 pl-6">Owner Name</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs py-3.5">UPI ID / VPA</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs py-3.5">Owner User Account</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs py-3.5">Priority</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs py-3.5 pr-6 text-right">Created At</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredUpis.map((upi: any) => {
-                    const upiIdVal = upi._id || upi.id;
-                    const userEmail = upi.userId?.email || upi.user?.email || upi.userId || 'N/A';
-                    const userFullName = upi.userId?.fullName || upi.user?.fullName || 'Client User';
+            <>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader className="bg-slate-950/20 border-b border-slate-800">
+                    <TableRow className="border-slate-850 hover:bg-transparent">
+                      <TableHead className="text-slate-400 font-semibold text-xs py-3.5 pl-6">Owner Name</TableHead>
+                      <TableHead className="text-slate-400 font-semibold text-xs py-3.5">UPI ID / VPA</TableHead>
+                      <TableHead className="text-slate-400 font-semibold text-xs py-3.5">Owner User Account</TableHead>
+                      <TableHead className="text-slate-400 font-semibold text-xs py-3.5">Priority</TableHead>
+                      <TableHead className="text-slate-400 font-semibold text-xs py-3.5 pr-6 text-right">Created At</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {displayedUpis.map((upi: any) => {
+                      const upiIdVal = upi._id || upi.id;
+                      const userEmail = upi.userId?.email || upi.user?.email || upi.userId || 'N/A';
+                      const userFullName = upi.userId?.fullName || upi.user?.fullName || 'Client User';
 
-                    return (
-                      <TableRow key={upiIdVal} className="border-slate-850 hover:bg-slate-850/20">
-                        <TableCell className="py-3.5 pl-6">
-                          <div className="font-semibold text-white text-sm flex items-center gap-1.5">
-                            <UserCheck className="h-3.5 w-3.5 text-slate-500" />
-                            {upi.accountHolderName || 'N/A'}
-                          </div>
-                        </TableCell>
-                        <TableCell className="py-3.5 font-mono text-indigo-400 text-sm font-semibold">
-                          {upi.upiId}
-                        </TableCell>
-                        <TableCell className="py-3.5">
-                          <div className="text-white text-xs font-semibold">{userFullName}</div>
-                          <div className="text-slate-500 text-xs">{userEmail}</div>
-                        </TableCell>
-                        <TableCell className="py-3.5">
-                          {upi.isPrimary ? (
-                            <Badge className="bg-emerald-500/10 text-emerald-450 hover:bg-emerald-500/10 border border-emerald-500/20 text-[10px] px-2 py-0.5 font-bold">
-                              Primary
-                            </Badge>
-                          ) : (
-                            <Badge variant="secondary" className="bg-slate-800 text-slate-400 text-[10px] px-2 py-0.5">
-                              Secondary
-                            </Badge>
-                          )}
-                        </TableCell>
-                        <TableCell className="py-3.5 pr-6 text-right text-xs text-slate-500 font-mono">
-                          {upi.createdAt ? new Date(upi.createdAt).toLocaleString('en-IN') : 'Just now'}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
+                      return (
+                        <TableRow key={upiIdVal} className="border-slate-850 hover:bg-slate-850/20">
+                          <TableCell className="py-3.5 pl-6">
+                            <div className="font-semibold text-white text-sm flex items-center gap-1.5">
+                              <UserCheck className="h-3.5 w-3.5 text-slate-500" />
+                              {upi.accountHolderName || 'N/A'}
+                            </div>
+                          </TableCell>
+                          <TableCell className="py-3.5 font-mono text-indigo-400 text-sm font-semibold">
+                            {upi.upiId}
+                          </TableCell>
+                          <TableCell className="py-3.5">
+                            <div className="text-white text-xs font-semibold">{userFullName}</div>
+                            <div className="text-slate-500 text-xs">{userEmail}</div>
+                          </TableCell>
+                          <TableCell className="py-3.5">
+                            {upi.isPrimary ? (
+                              <Badge className="bg-emerald-500/10 text-emerald-450 hover:bg-emerald-500/10 border border-emerald-500/20 text-[10px] px-2 py-0.5 font-bold">
+                                Primary
+                              </Badge>
+                            ) : (
+                              <Badge variant="secondary" className="bg-slate-800 text-slate-400 text-[10px] px-2 py-0.5">
+                                Secondary
+                              </Badge>
+                            )}
+                          </TableCell>
+                          <TableCell className="py-3.5 pr-6 text-right text-xs text-slate-500 font-mono">
+                            {upi.createdAt ? new Date(upi.createdAt).toLocaleString('en-IN') : 'Just now'}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+              {/* Pagination Controls */}
+              <PaginationControls
+                currentPage={activePage}
+                totalPages={totalPages}
+                totalCount={totalCount}
+                pageSize={pageSize}
+                onPageChange={handlePageChange}
+                onPageSizeChange={handlePageSizeChange}
+                itemName="addresses"
+                activeButtonClass="bg-indigo-600 text-white hover:bg-indigo-500 font-bold border-indigo-500 shadow-sm shadow-indigo-600/30"
+              />
+            </>
           )}
         </CardContent>
       </Card>
